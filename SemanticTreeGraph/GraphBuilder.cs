@@ -13,46 +13,112 @@ namespace SemanticTreeGraph
 {
     public class GraphBuilder
     {
-        public void Build(Graph graph, Solution solution)
+        public async Task Build(Graph graph, Solution solution)
         {
-
             var project = solution.Projects.ElementAt(0);
             var doc = project.Documents.ElementAt(0);
             var model = doc.GetSemanticModelAsync().Result;
 
-            var root = model.SyntaxTree.GetRoot();
+            var members = GetExplicitlyDeclaredMembersOfAllClassesInModel(model);
 
-            var classNode = root
-                                .DescendantNodesAndSelf()
-                                .Where(x => x.Kind() == SyntaxKind.ClassDeclaration); // todo add structs
+            var referencesBetwenMembers = GetMemberReferences(solution, model, doc, members);
 
-            var classSymbols = classNode.Select(x => model.GetDeclaredSymbol(x) as INamedTypeSymbol);
+            referencesBetwenMembers = AbsorbGettersSettersIntoProp(referencesBetwenMembers);
 
-            var members = classSymbols
-                                .SelectMany(x => x.GetMembers())
-                                .Where(x => x.IsImplicitlyDeclared == false);
+            foreach (var reference in referencesBetwenMembers)
+            {
+                graph.AddEdge(  source: reference.ReferencingSymbol.Name, 
+                                target: reference.OriginalSymbol.Name);
 
-            var edgeLocation2 = new List<SymbolRef>();
+                graph.FindNode(reference.ReferencingSymbol.Name).UserData = reference.ReferencingSymbol;
+                graph.FindNode(reference.OriginalSymbol.Name).UserData = reference.OriginalSymbol;
+            }
+
+            foreach (var field in members.OfType<IFieldSymbol>())
+            {
+                var stateNode = graph.FindNode(field.Name);
+           
+                stateNode.Attr.FillColor = Color.LightBlue;
+            }
+ 
+            foreach (var prop in members.OfType<IPropertySymbol>())
+            {
+                var stateNode = graph.FindNode(prop.Name);
+
+                stateNode.Attr.FillColor = Color.LightGreen;
+            }
+        }
+
+        private SymbolRef[] AbsorbGettersSettersIntoProp(SymbolRef[] referencesBetwenMembers)
+        {
+            var gettersSetters = referencesBetwenMembers
+                                            .Where(x => x.OriginalSymbol is IMethodSymbol
+                                                        && x.ReferencingSymbol is IPropertySymbol);
+
+            var referencesToGettersSetters = referencesBetwenMembers
+                                                    .Where(x => gettersSetters.Any(y => y.OriginalSymbol == x.ReferencingSymbol));
+
+            var newReferences = referencesToGettersSetters
+                                    .SelectMany(@ref => 
+                                    {
+                                        var targets = gettersSetters.Where(x => x.OriginalSymbol == @ref.ReferencingSymbol);
+
+                                        return targets.Select(t => new SymbolRef(
+                                                                        @ref.OriginalSymbol, 
+                                                                        t.Document, 
+                                                                        t.Location, 
+                                                                        t.ReferencingSymbol));
+                                    });
+
+
+            var refsWithoutGetterSetters = referencesBetwenMembers
+                                                    .Except(gettersSetters)
+                                                    .Except(referencesToGettersSetters)
+                                                    .Union(newReferences);
+
+            return refsWithoutGetterSetters.ToArray();
+        }
+
+        private static SymbolRef[] GetMemberReferences(Solution solution, SemanticModel model, Document doc, ISymbol[] members)
+        {
+            var references = new List<SymbolRef>();
 
             foreach (var member in members)
             {
                 switch (member)
                 {
+                    // point property accessors to declaring property
                     case IMethodSymbol m when m.AssociatedSymbol != null:
-                        edgeLocation2.Add(new SymbolRef(m, doc, m.AssociatedSymbol.Locations.ElementAt(0)));
+
+                        m.AssociatedSymbol
+                                        .Locations
+                                        .Select(x => new SymbolRef(m, doc, x))
+                                        .Pipe(references.AddRange);
                         break;
+
+                    // point backing fileds to declaring property
+                    case IFieldSymbol f when f.AssociatedSymbol != null:
+
+                        f.AssociatedSymbol
+                                    .Locations
+                                    .Select(x => new SymbolRef(f, doc, x))
+                                    .Pipe(references.AddRange);
+                        break;
+
                     default:
+
                         var refs = SymbolFinder
                                         .FindReferencesAsync(member, solution)
                                         .Result
                                         .SelectMany(x => x.Locations)
                                         .Select(x => new SymbolRef(member, x.Document, x.Location));
-                        edgeLocation2.AddRange(refs);
+
+                        references.AddRange(refs);
                         break;
                 }
             }
 
-            var edgeSymbols = edgeLocation2.AsParallel().Select(async (x) =>
+            references.AsParallel().ForEach(async (x) =>
             {
                 var locRoot = await x.Document.GetSyntaxRootAsync();
                 var node = locRoot.FindNode(x.Location.SourceSpan);
@@ -72,87 +138,31 @@ namespace SemanticTreeGraph
 
                 if (methodNode == null)
                 {
-                    return null;
+                    return;
                 }
 
-                var symbol = model.GetDeclaredSymbol(methodNode);
-                return new { member = x.Symbol, methodNode, symbol };
-            })
-            .Where(x => x != null);
+                var referencingSymbol = model.GetDeclaredSymbol(methodNode);
+                x.ReferencingSymbol = referencingSymbol;
+            });
 
-            foreach (var edgeTask in edgeSymbols)
-            {
-                var edge = edgeTask.Result;
-                graph.AddEdge(edge.symbol.Name, edge.member.Name);
-                var codeNode = graph.FindNode(edge.symbol.Name);
+            return references.Where(x => x.ReferencingSymbol != null).ToArray();
+        }
 
-                var text = edge.methodNode.GetText().ToString().Replace("\r\n       ", "\r\n");
+        private static ISymbol[] GetExplicitlyDeclaredMembersOfAllClassesInModel(SemanticModel model)
+        {
+            var syntaxRoot = model.SyntaxTree.GetRoot();
 
-                if (text.StartsWith("\r\n"))
-                {
-                    text = text.Substring(2);
-                }
+            var classNodes = syntaxRoot
+                                .DescendantNodesAndSelf()
+                                .Where(x => x.Kind() == SyntaxKind.ClassDeclaration); // todo add structs?
 
-                text = text.Trim();
+            var classSymbols = classNodes.Select(x => model.GetDeclaredSymbol(x) as INamedTypeSymbol);
 
-                if (text.StartsWith("get\r\n"))
-                {
-                    codeNode.LabelText = "get";
-                }
+            var members = classSymbols
+                                .SelectMany(x => x.GetMembers())
+                                .Where(x => x.IsImplicitlyDeclared == false);
 
-                else if (text.StartsWith("set\r\n"))
-                {
-                    codeNode.LabelText = "set";
-                }
-                else
-                {
-                    codeNode.LabelText = text;
-                }
-            }
-
-            foreach (var field in members.OfType<IFieldSymbol>())
-            {
-                var stateNode = graph.FindNode(field.Name);
-
-                string text;
-
-                if (field.DeclaringSyntaxReferences.Any() == false)
-                {
-                    text = field.ToDisplayString();
-                }
-                else
-                {
-                    text = field.DeclaringSyntaxReferences
-                                .Single()
-                                .GetSyntax()
-                                .FirstAncestorOrSelf<FieldDeclarationSyntax>()
-                                .GetText().ToString()
-                                .Replace("       ", "");
-                }
-
-                if (text.StartsWith("\r\n"))
-                {
-                    text = text.Substring(2);
-                }
-
-                stateNode.LabelText = text;
-                stateNode.Attr.FillColor = Color.LightBlue;
-            }
-
-            var propertyGets = graph.Nodes.Where(x => x.LabelText.StartsWith("get_")
-                                                && x.OutEdges.Any() == false);
-
-            foreach (var node in propertyGets)
-            {
-                node.Attr.FillColor = Color.LightBlue;
-            }
-
-            var publics = graph.Nodes.Where(x => x.LabelText.StartsWith("public"));
-
-            foreach (var node in publics)
-            {
-                node.Attr.FillColor = Color.LightGreen;
-            }
+            return members.ToArray();
         }
     }
 }

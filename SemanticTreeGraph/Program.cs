@@ -74,7 +74,8 @@ namespace SemanticTreeGraph
                 // Attach progress reporter so we print projects as they are loaded.
                 var solution = await workspace.OpenSolutionAsync(solutionPath, new ConsoleProgressReporter());
 
-                new GraphBuilder().Build(graph, solution);
+                var buildTask = new GraphBuilder().Build(graph, solution);
+                buildTask.Wait();
             }
         }
 
