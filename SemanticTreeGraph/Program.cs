@@ -23,7 +23,8 @@ namespace SemanticTreeGraph
 {
     class Program
     {
-        static async Task Main(string[] args)
+        [STAThread]
+        static void Main(string[] args)
         {
             Graph graph = new Graph("");
 
@@ -31,7 +32,7 @@ namespace SemanticTreeGraph
 
             settings.Transformation = PlaneTransformation.Rotation(Math.PI / 2);
 
-            await Analyze(graph);
+            Analyze(graph).Wait();
 
             graph.Write("graph");
 

@@ -25,49 +25,87 @@ namespace SemanticTreeGraph
 
             referencesBetwenMembers = AbsorbGettersSettersIntoProp(referencesBetwenMembers);
 
+            referencesBetwenMembers = referencesBetwenMembers.Distinct().ToArray();
+
             foreach (var reference in referencesBetwenMembers)
             {
-                graph.AddEdge(  source: reference.ReferencingSymbol.Name, 
+                graph.AddEdge(  source: reference.RefSymbol.Name, 
                                 target: reference.OriginalSymbol.Name);
 
-                graph.FindNode(reference.ReferencingSymbol.Name).UserData = reference.ReferencingSymbol;
+                graph.FindNode(reference.RefSymbol.Name).UserData = reference.RefSymbol;
                 graph.FindNode(reference.OriginalSymbol.Name).UserData = reference.OriginalSymbol;
             }
 
-            foreach (var field in members.OfType<IFieldSymbol>())
+            var survivedMembers = referencesBetwenMembers
+                                            .SelectMany(x => new[] { x.RefSymbol, x.OriginalSymbol })
+                                            .Distinct()
+                                            .ToArray();
+
+            foreach (var field in survivedMembers.OfType<IFieldSymbol>())
             {
-                var stateNode = graph.FindNode(field.Name);
-           
-                stateNode.Attr.FillColor = Color.LightBlue;
+                var node = graph.FindNode(field.Name);
+                node.LabelText = GetText(field);
+
+                node.Attr.FillColor = Color.Orange;
             }
  
-            foreach (var prop in members.OfType<IPropertySymbol>())
+            foreach (var prop in survivedMembers.OfType<IPropertySymbol>())
             {
-                var stateNode = graph.FindNode(prop.Name);
+                var node = graph.FindNode(prop.Name);
+                node.LabelText = GetText(prop);
 
-                stateNode.Attr.FillColor = Color.LightGreen;
+                node.Attr.FillColor = Color.LightBlue;
             }
+
+            foreach (var method in survivedMembers.OfType<IMethodSymbol>())
+            {
+                var node = graph.FindNode(method.Name);
+                node.LabelText = GetText(method);
+
+                if (method.DeclaredAccessibility == Accessibility.Public)
+                {
+                    node.Attr.FillColor = Color.LightGreen;
+                }
+            }
+
+            foreach (var node in graph.Nodes)
+            {
+                if(node.UserData is IPropertySymbol
+                   && node.LabelText.Contains(" set;"))
+                {
+                    node.Attr.FillColor = Color.Orange;
+                }
+            }
+
+            referencesBetwenMembers
+                        .Where(x => x.RefDocument != doc)
+                        .ForEach(x =>
+                        {
+                            var node = graph.FindNode(x.RefSymbol.Name);
+                            node.LabelText = $"{x.RefDocument.Name}\r\n{node.LabelText}";
+                            node.Attr.FillColor = Color.Red;
+                        });
         }
 
         private SymbolRef[] AbsorbGettersSettersIntoProp(SymbolRef[] referencesBetwenMembers)
         {
             var gettersSetters = referencesBetwenMembers
                                             .Where(x => x.OriginalSymbol is IMethodSymbol
-                                                        && x.ReferencingSymbol is IPropertySymbol);
+                                                        && x.RefSymbol is IPropertySymbol);
 
             var referencesToGettersSetters = referencesBetwenMembers
-                                                    .Where(x => gettersSetters.Any(y => y.OriginalSymbol == x.ReferencingSymbol));
+                                                    .Where(x => gettersSetters.Any(y => y.OriginalSymbol == x.RefSymbol));
 
             var newReferences = referencesToGettersSetters
                                     .SelectMany(@ref => 
                                     {
-                                        var targets = gettersSetters.Where(x => x.OriginalSymbol == @ref.ReferencingSymbol);
+                                        var targets = gettersSetters.Where(x => x.OriginalSymbol == @ref.RefSymbol);
 
                                         return targets.Select(t => new SymbolRef(
                                                                         @ref.OriginalSymbol, 
-                                                                        t.Document, 
-                                                                        t.Location, 
-                                                                        t.ReferencingSymbol));
+                                                                        t.RefDocument, 
+                                                                        t.RefLocation, 
+                                                                        t.RefSymbol));
                                     });
 
 
@@ -120,8 +158,8 @@ namespace SemanticTreeGraph
 
             references.AsParallel().ForEach(async (x) =>
             {
-                var locRoot = await x.Document.GetSyntaxRootAsync();
-                var node = locRoot.FindNode(x.Location.SourceSpan);
+                var locRoot = await x.RefDocument.GetSyntaxRootAsync();
+                var node = locRoot.FindNode(x.RefLocation.SourceSpan);
 
                 var lookForMembers = new[]
                 {
@@ -142,10 +180,10 @@ namespace SemanticTreeGraph
                 }
 
                 var referencingSymbol = model.GetDeclaredSymbol(methodNode);
-                x.ReferencingSymbol = referencingSymbol;
+                x.RefSymbol = referencingSymbol;
             });
 
-            return references.Where(x => x.ReferencingSymbol != null).ToArray();
+            return references.Where(x => x.RefSymbol != null).ToArray();
         }
 
         private static ISymbol[] GetExplicitlyDeclaredMembersOfAllClassesInModel(SemanticModel model)
@@ -163,6 +201,33 @@ namespace SemanticTreeGraph
                                 .Where(x => x.IsImplicitlyDeclared == false);
 
             return members.ToArray();
+        }
+
+        private static string GetText(ISymbol symb)
+        {
+            SyntaxNode node = symb.DeclaringSyntaxReferences.First()
+                                    .GetSyntax();
+
+            if(symb is IFieldSymbol)
+            {
+                node = node.FirstAncestorOrSelf<FieldDeclarationSyntax>();
+            }
+                               
+            var text = new StringBuilder(node.ToFullString());
+
+            var spacesToTrim = text.ToString()
+                                     .Split(new[] { "\r\n" }, StringSplitOptions.None)
+                                     .Where(x => string.IsNullOrWhiteSpace(x) == false)
+                                     .Select(line => line.Length - line.TrimStart().Length)
+                                     .Min();
+
+            if(spacesToTrim != 0)
+            {
+                var spaces = "\r\n" + new string(' ', spacesToTrim);
+                text.Replace(spaces, "\r\n");
+            }
+         
+            return " " + text.ToString().TrimStart();
         }
     }
 }
