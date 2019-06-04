@@ -13,10 +13,8 @@ namespace SemanticTreeGraph
 {
     public class GraphBuilder
     {
-        public async Task Build(Graph graph, Solution solution)
+        public async Task Build(Graph graph, Solution solution, Project project, Document doc)
         {
-            var project = solution.Projects.ElementAt(0);
-            var doc = project.Documents.ElementAt(0);
             var model = doc.GetSemanticModelAsync().Result;
 
             var members = GetExplicitlyDeclaredMembersOfAllClassesInModel(model);
@@ -44,7 +42,7 @@ namespace SemanticTreeGraph
             foreach (var field in survivedMembers.OfType<IFieldSymbol>())
             {
                 var node = graph.FindNode(field.Name);
-                node.LabelText = GetText(field);
+                //node.LabelText = GetText(field);
 
                 node.Attr.FillColor = Color.Orange;
             }
@@ -52,20 +50,16 @@ namespace SemanticTreeGraph
             foreach (var prop in survivedMembers.OfType<IPropertySymbol>())
             {
                 var node = graph.FindNode(prop.Name);
-                node.LabelText = GetText(prop);
+                //node.LabelText = GetText(prop);
 
-                node.Attr.FillColor = Color.LightBlue;
+                node.Attr.FillColor = Color.LightPink;
             }
 
             foreach (var method in survivedMembers.OfType<IMethodSymbol>())
             {
                 var node = graph.FindNode(method.Name);
-                node.LabelText = GetText(method);
-
-                if (method.DeclaredAccessibility == Accessibility.Public)
-                {
-                    node.Attr.FillColor = Color.LightGreen;
-                }
+                node.Attr.FillColor = Color.LightBlue;
+                //node.LabelText = GetText(method);
             }
 
             foreach (var node in graph.Nodes)
@@ -77,6 +71,14 @@ namespace SemanticTreeGraph
                 }
             }
 
+            graph.Nodes
+                .Where(node => (node.UserData as ISymbol)?.DeclaredAccessibility == Accessibility.Public)
+                .ForEach(node =>
+                {
+                    node.Attr.FillColor = Color.LightGreen;
+                });
+
+            //no externals for now, so this will do nothing
             referencesBetwenMembers
                         .Where(x => x.RefDocument != doc)
                         .ForEach(x =>
@@ -85,6 +87,13 @@ namespace SemanticTreeGraph
                             node.LabelText = $"{x.RefDocument.Name}\r\n{node.LabelText}";
                             node.Attr.FillColor = Color.Red;
                         });
+
+            graph.Nodes.ForEach(node =>
+            {
+                node.Attr.Padding = 1;
+                node.LabelText = GetText(node.UserData as ISymbol);
+                node.UserData = null;
+            });
         }
 
         private SymbolRef[] AbsorbGettersSettersIntoProp(SymbolRef[] referencesBetwenMembers)
@@ -149,6 +158,7 @@ namespace SemanticTreeGraph
                                         .FindReferencesAsync(member, solution)
                                         .Result
                                         .SelectMany(x => x.Locations)
+                                        .Where(x => x.Document == doc)
                                         .Select(x => new SymbolRef(member, x.Document, x.Location));
 
                         references.AddRange(refs);
@@ -224,7 +234,7 @@ namespace SemanticTreeGraph
             if(spacesToTrim != 0)
             {
                 var spaces = "\r\n" + new string(' ', spacesToTrim);
-                text.Replace(spaces, "\r\n");
+                text.Replace(spaces, "\r\n ");
             }
          
             return " " + text.ToString().TrimStart();

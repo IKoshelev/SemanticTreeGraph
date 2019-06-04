@@ -26,38 +26,120 @@ namespace SemanticTreeGraph
         [STAThread]
         static void Main(string[] args)
         {
-            Graph graph = new Graph("");
+            Graph originalGraph = new Graph("");
 
+            LoadSolutionAnnBuildGrpah(originalGraph).Wait();
+
+            while (true)
+            {
+                var graph = CopyGraph(originalGraph);
+                //  the nodes you are interested in
+                var startNodes = new HashSet<string>()
+                {
+                    "ABCD",
+                    //"GetBC"
+                };
+                // the nodes with lots of connection, that would 
+                // pull in entire file
+                // todo try to autodetect? 
+                var nodesToNotContinue = new HashSet<string>()
+                {
+                    //"GetAB"
+                };
+
+                TrimGraph(graph, startNodes, nodesToNotContinue);
+
+                DisplayGraph(graph);
+            }
+        }
+
+        private static void TrimGraph(Graph graph, HashSet<string> startNodes, HashSet<string> nodesToNotContinue)
+        {
+            var nodesToLeaveInTheGraph = new HashSet<Node>();
+
+            startNodes
+                .Select(graph.FindNode)
+                .ForEach(x => nodesToLeaveInTheGraph.Add(x));
+
+            var nodesToProcess = new HashSet<Node>(nodesToLeaveInTheGraph);
+
+            while (nodesToProcess.Any())
+            {
+                var currentNodes = nodesToProcess;
+                nodesToProcess = new HashSet<Node>();
+                currentNodes.ForEach(node =>
+                {
+                    if (nodesToNotContinue.Contains(node.Id))
+                    {
+                        node.Attr.AddStyle(Style.Dashed);
+                        return;
+                    }
+
+                    var dependentNodes = node.OutEdges
+                                            .Select(x => x.TargetNode)
+                                            // avoid SelfEdge
+                                            .Where(x => nodesToLeaveInTheGraph.Contains(x) == false)
+                                            .ToArray();
+
+                    dependentNodes.ForEach(newNode =>
+                    {
+                        nodesToProcess.Add(newNode);
+                        nodesToLeaveInTheGraph.Add(newNode);
+                    });
+                });
+            }
+
+            graph.Nodes.ToArray().ForEach(x =>
+            {
+                if (nodesToLeaveInTheGraph.Contains(x) == false)
+                {
+                    try
+                    {
+                        var n = graph.FindNode(x.Id);
+                        graph.RemoveNode(n);
+                    }
+                    catch
+                    {
+                        //code above throws, even though it looks like it should not
+                        //still does the job though
+                    }
+                }
+            });
+        }
+
+        private static Graph CopyGraph(Graph original)
+        {
+            using (var stream = new MemoryStream())
+            {
+                original.WriteToStream(stream);
+                stream.Position = 0;
+                return Graph.ReadGraphFromStream(stream);
+            }
+        }
+
+        private static void DisplayGraph(Graph graph)
+        {
             var settings = graph.LayoutAlgorithmSettings as SugiyamaLayoutSettings;
 
             settings.Transformation = PlaneTransformation.Rotation(Math.PI / 2);
 
-            Analyze(graph).Wait();
-
-            graph.Write("graph");
-
-            //create a form 
             Form form = new Form();
             form.Width = 1024;
             form.Height = 768;
-            //create a viewer object 
-            GViewer viewer = new GViewer();
 
+            GViewer viewer = new GViewer();
             viewer.Graph = graph;
-            //associate the viewer with the form 
+
             form.SuspendLayout();
             viewer.Dock = DockStyle.Fill;
             form.Controls.Add(viewer);
             form.ResumeLayout();
-            //show the form 
-            form.ShowDialog();
 
-            //ToBitmap(graph);
+            form.ShowDialog();
         }
 
-        private static async Task Analyze(Graph graph)
+        private static async Task LoadSolutionAnnBuildGrpah(Graph graph)
         {
-
             var visualStudioInstances = MSBuildLocator.QueryVisualStudioInstances().ToArray();
             var instance = visualStudioInstances[0];
 
@@ -72,10 +154,11 @@ namespace SemanticTreeGraph
                 var solutionPath = @"C:\Users\Me\Documents\Visual Studio 2017\Projects\Test-bed\Test-bed.sln";
                 Console.WriteLine($"Loading solution '{solutionPath}'");
 
-                // Attach progress reporter so we print projects as they are loaded.
                 var solution = await workspace.OpenSolutionAsync(solutionPath, new ConsoleProgressReporter());
+                var project = solution.Projects.Single(x => x.FilePath == @"C:\Users\Me\Documents\Visual Studio 2017\Projects\Test-bed\Test-bed\Test-bed.csproj");
+                var doc = project.Documents.Single(x => x.Name == "Class1.cs");
 
-                var buildTask = new GraphBuilder().Build(graph, solution);
+                var buildTask = new GraphBuilder().Build(graph, solution, project, doc);
                 buildTask.Wait();
             }
         }
