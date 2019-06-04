@@ -61,6 +61,11 @@ namespace SemanticTreeGraph
                 .Select(graph.FindNode)
                 .ForEach(x => nodesToLeaveInTheGraph.Add(x));
 
+            nodesToLeaveInTheGraph.ForEach(node =>
+            {
+                node.Attr.FillColor = Color.Gold;
+            });
+
             var nodesToProcess = new HashSet<Node>(nodesToLeaveInTheGraph);
 
             while (nodesToProcess.Any())
